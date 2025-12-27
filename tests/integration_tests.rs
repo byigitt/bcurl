@@ -1,6 +1,6 @@
-//! Integration tests for minimal-curl
+//! Integration tests for bcurl
 
-use minimal_curl::{HttpMethod, MinimalCurl, RequestConfig};
+use bcurl::{HttpMethod, MinimalCurl, RequestConfig};
 use mockito::{Matcher, Server};
 use tempfile::NamedTempFile;
 

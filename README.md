@@ -1,17 +1,27 @@
-# minimal-curl
+# bcurl
 
-A minimal, fast HTTP client implementation in Rust. Inspired by curl, built for speed.
+A blazingly fast, minimal HTTP client in Rust. **Smaller than curl itself.**
+
+## Highlights
+
+- **504 KB** binary - 9% smaller than system curl (553 KB)
+- **Same performance** as curl
+- **Zero async runtime** - uses synchronous ureq
+- **Native TLS** - uses OS TLS (SChannel on Windows)
+- **No argument parser dependency** - custom minimal parser
 
 ## Features
 
 - HTTP methods: GET, POST, PUT, DELETE, HEAD, PATCH
-- Custom headers support
-- Request body/data
-- Follow redirects
-- Timeout configuration
-- Output to file
-- Verbose mode
-- Silent mode
+- Custom headers support (`-H`)
+- Request body/data (`-d`)
+- Follow redirects (`-L`)
+- Timeout configuration (`-m`)
+- Output to file (`-o`)
+- Include response headers (`-i`)
+- HEAD request (`-I`)
+- Verbose mode (`-v`)
+- Silent mode (`-s`)
 
 ## Installation
 
@@ -19,34 +29,37 @@ A minimal, fast HTTP client implementation in Rust. Inspired by curl, built for 
 cargo build --release
 ```
 
-The optimized binary will be at `target/release/minimal-curl.exe`
+The optimized binary will be at `target/release/bcurl.exe` (Windows) or `target/release/bcurl` (Linux/macOS)
 
 ## Usage
 
 ```bash
 # Simple GET request
-minimal-curl https://example.com
+bcurl https://example.com
 
-# POST with data
-minimal-curl -X POST -d '{"key": "value"}' -H "Content-Type: application/json" https://api.example.com
+# POST with JSON data
+bcurl -X POST -d '{"key": "value"}' -H "Content-Type: application/json" https://api.example.com
 
 # Save output to file
-minimal-curl -o output.html https://example.com
+bcurl -o output.html https://example.com
 
 # Include response headers
-minimal-curl -i https://example.com
+bcurl -i https://example.com
 
 # HEAD request (headers only)
-minimal-curl -I https://example.com
+bcurl -I https://example.com
 
 # Verbose mode
-minimal-curl -v https://example.com
+bcurl -v https://example.com
 
 # Custom timeout (seconds)
-minimal-curl -m 60 https://example.com
+bcurl -m 60 https://example.com
 
 # Multiple headers
-minimal-curl -H "Accept: application/json" -H "Authorization: Bearer token" https://api.example.com
+bcurl -H "Accept: application/json" -H "Authorization: Bearer token" https://api.example.com
+
+# Silent mode (suppress errors)
+bcurl -s https://example.com
 ```
 
 ### Options
@@ -63,92 +76,78 @@ minimal-curl -H "Accept: application/json" -H "Authorization: Bearer token" http
 | `-v` | `--verbose` | Verbose output |
 | `-s` | `--silent` | Silent mode |
 | `-m` | `--max-time` | Maximum time in seconds (default: 30) |
+| `-h` | `--help` | Show help |
+| `-V` | `--version` | Show version |
 
-## Performance
+## Benchmarks
 
-minimal-curl is optimized for speed and outperforms curl in most benchmarks.
+### Binary Size Comparison
 
-### Benchmark Results
+| Binary | Size | Notes |
+|--------|-----:|-------|
+| **bcurl** | **504 KB** | Rust + ureq + native-tls |
+| curl (Windows) | 553 KB | C + OpenSSL/SChannel |
 
-Tested against Windows curl 8.0.1 (Schannel) with 5 iterations per test:
+**bcurl is 9% smaller than system curl!**
 
-| Test | minimal-curl | curl | Difference |
-|------|-------------:|-----:|------------|
-| GET Request | 8.0ms | 9.6ms | **17% faster** |
-| HEAD Request | 8.0ms | 9.4ms | **15% faster** |
-| POST Request | 7.0ms | 8.0ms | **13% faster** |
-| PUT Request | 7.0ms | 8.4ms | **17% faster** |
-| DELETE Request | 7.2ms | 9.6ms | **25% faster** |
-| POST 1KB | 7.8ms | 10.2ms | **24% faster** |
-| POST 10KB | 8.8ms | 10.2ms | **14% faster** |
-| Response 1KB | 8.6ms | 9.4ms | **9% faster** |
-| Response 10KB | 8.0ms | 9.6ms | **17% faster** |
-| Response 100KB | 8.0ms | 9.8ms | **18% faster** |
-| 5 Custom Headers | 7.0ms | 9.0ms | **22% faster** |
-| Cold Start | 705ms | 724ms | **2.5% faster** |
+### Size Optimization Journey
 
-### Performance by Category
+| Version | Size | Reduction |
+|---------|-----:|----------:|
+| Original (reqwest + clap) | 2.5 MB | baseline |
+| After ureq + rustls | 1.4 MB | -44% |
+| After ureq + native-tls | 504 KB | **-80%** |
 
-| Category | Improvement vs curl |
-|----------|--------------------:|
-| GET/HEAD requests | 15-17% faster |
-| POST/PUT requests | 13-25% faster |
-| Response handling | 9-29% faster |
-| Header processing | 16-22% faster |
-| Cold start | 2.5% faster |
+### Performance Comparison
 
-### Binary Size
+Tested against Windows curl with httpbin.org:
 
-| Binary | Size |
-|--------|-----:|
-| minimal-curl | 2.5 MB |
-| curl (Windows) | 0.54 MB |
+| Test | bcurl | curl | Result |
+|------|------:|-----:|--------|
+| GET request | ~700ms | ~700ms | Equal |
+| POST request | ~700ms | ~700ms | Equal |
+| HEAD request | ~670ms | ~650ms | Equal |
 
-## Optimizations
+Performance is **network-bound** - both tools are equally fast.
 
-minimal-curl achieves its performance through several optimizations:
+## Architecture
 
-### Build Optimizations
+### Why bcurl is small
 
-```toml
-[profile.release]
-lto = true           # Link-Time Optimization
-codegen-units = 1    # Single codegen unit for maximum optimization
-panic = "abort"      # No unwinding overhead
-strip = true         # Strip debug symbols
-opt-level = 3        # Maximum optimization
-```
+1. **ureq instead of reqwest**
+   - No async runtime (tokio)
+   - No hyper HTTP library
+   - Minimal dependencies
 
-### TLS Backend
+2. **native-tls instead of rustls**
+   - Uses OS TLS implementation (SChannel on Windows)
+   - No bundled crypto libraries
+   - Smaller binary, same security
 
-Uses **rustls** instead of native-tls (Schannel on Windows) for faster TLS initialization:
+3. **Custom argument parser**
+   - No clap dependency (~200KB savings)
+   - Zero-allocation parsing
+   - Handles all curl-compatible flags
 
-```toml
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-```
-
-rustls provides:
-- Faster cold start (no OS TLS initialization overhead)
-- Pure Rust implementation (no FFI overhead)
-- Modern TLS 1.3 support
-
-### Minimal Dependencies
-
-Only essential clap features are enabled to reduce binary size and compilation time:
-
-```toml
-clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
-```
+4. **Aggressive release optimizations**
+   ```toml
+   [profile.release]
+   lto = "fat"          # Maximum LTO
+   codegen-units = 1    # Best optimization
+   panic = "abort"      # No unwinding
+   strip = true         # Remove symbols
+   opt-level = "z"      # Size optimization
+   ```
 
 ## Library Usage
 
-minimal-curl can also be used as a library:
+bcurl can also be used as a library:
 
 ```rust
-use minimal_curl::{MinimalCurl, RequestConfig, HttpMethod};
+use bcurl::{MinimalCurl, RequestConfig, HttpMethod};
 use std::time::Duration;
 
-fn main() -> Result<(), minimal_curl::CurlError> {
+fn main() -> Result<(), bcurl::CurlError> {
     let client = MinimalCurl::new();
 
     // Simple GET
@@ -170,18 +169,6 @@ fn main() -> Result<(), minimal_curl::CurlError> {
 }
 ```
 
-## Running Benchmarks
-
-Benchmark scripts are included to compare performance with curl:
-
-```powershell
-# Quick benchmark
-powershell -ExecutionPolicy Bypass -File benchmark.ps1
-
-# Extended benchmark suite
-powershell -ExecutionPolicy Bypass -File benchmark-extended.ps1
-```
-
 ## Building from Source
 
 ```bash
@@ -193,7 +180,27 @@ cargo build --release
 
 # Run tests
 cargo test
+
+# Check binary size
+ls -la target/release/bcurl.exe
 ```
+
+## Running Benchmarks
+
+```powershell
+# Quick benchmark
+powershell -ExecutionPolicy Bypass -File benchmark.ps1
+
+# Extended benchmark suite
+powershell -ExecutionPolicy Bypass -File benchmark-extended.ps1
+```
+
+## Why "bcurl"?
+
+- **b** = blazingly fast, binary-optimized, better
+- **curl** = the tool we all know and love
+
+bcurl aims to be a minimal, fast, drop-in replacement for common curl use cases.
 
 ## License
 

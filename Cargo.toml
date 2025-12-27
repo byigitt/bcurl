@@ -1,15 +1,25 @@
 [package]
-name = "minimal-curl"
-version = "0.1.0"
+name = "bcurl"
+version = "0.2.0"
 edition = "2021"
-description = "A minimal curl implementation in Rust"
+description = "A blazingly fast, minimal curl alternative in Rust - smaller than curl itself"
 license = "MIT"
+keywords = ["http", "curl", "cli", "client", "fast"]
+categories = ["command-line-utilities", "web-programming::http-client"]
+
+[[bin]]
+name = "bcurl"
+path = "src/main.rs"
+
+[lib]
+name = "bcurl"
+path = "src/lib.rs"
 
 [dependencies]
-# Use rustls instead of native-tls for faster TLS initialization
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-# Minimal clap features
-clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+# ureq is MUCH smaller than reqwest - no async runtime, minimal deps
+# Use native-tls on Windows for smaller binary (uses SChannel)
+ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
 thiserror = "2.0"
 
 [dev-dependencies]
@@ -17,8 +27,12 @@ mockito = "1.6"
 tempfile = "3.15"
 
 [profile.release]
-lto = true           # Link-Time Optimization - better inlining across crates
+lto = "fat"          # Maximum Link-Time Optimization
 codegen-units = 1    # Single codegen unit for maximum optimization
 panic = "abort"      # No unwinding - smaller binary and faster
 strip = true         # Strip symbols from binary
-opt-level = 3        # Maximum optimization
+opt-level = "z"      # Optimize for size (also fast due to better cache usage)
+
+[profile.release-speed]
+inherits = "release"
+opt-level = 3        # Maximum speed optimization

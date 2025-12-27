@@ -1,20 +1,21 @@
-//! Minimal curl - A simple HTTP client library in Rust
+//! bcurl - A blazingly fast, minimal HTTP client library in Rust
 //!
 //! This library provides basic HTTP functionality similar to curl.
+//! Uses ureq for minimal binary size and fast startup.
 
-use reqwest::blocking::{Client, Response};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use ureq::{Agent, AgentBuilder};
 
 /// Custom error types for minimal-curl
 #[derive(Error, Debug)]
 pub enum CurlError {
     #[error("HTTP request failed: {0}")]
-    RequestError(#[from] reqwest::Error),
+    RequestError(#[from] ureq::Error),
 
     #[error("Invalid header format: {0}")]
     InvalidHeader(String),
@@ -55,7 +56,7 @@ impl std::fmt::Display for HttpMethod {
 pub struct RequestConfig {
     pub url: String,
     pub method: HttpMethod,
-    pub headers: HashMap<String, String>,
+    pub headers: Vec<(String, String)>, // Vec is faster than HashMap for small collections
     pub data: Option<String>,
     pub timeout: Option<Duration>,
     pub follow_redirects: bool,
@@ -69,7 +70,7 @@ impl Default for RequestConfig {
         Self {
             url: String::new(),
             method: HttpMethod::Get,
-            headers: HashMap::new(),
+            headers: Vec::with_capacity(8), // Pre-allocate for common case
             data: None,
             timeout: Some(Duration::from_secs(30)),
             follow_redirects: true,
@@ -82,6 +83,7 @@ impl Default for RequestConfig {
 
 impl RequestConfig {
     /// Create a new RequestConfig with the given URL
+    #[inline]
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -90,48 +92,56 @@ impl RequestConfig {
     }
 
     /// Set the HTTP method
+    #[inline]
     pub fn method(mut self, method: HttpMethod) -> Self {
         self.method = method;
         self
     }
 
     /// Add a header to the request
+    #[inline]
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.insert(key.into(), value.into());
+        self.headers.push((key.into(), value.into()));
         self
     }
 
     /// Set the request body data
+    #[inline]
     pub fn data(mut self, data: impl Into<String>) -> Self {
         self.data = Some(data.into());
         self
     }
 
     /// Set the request timeout
+    #[inline]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
     /// Set whether to follow redirects
+    #[inline]
     pub fn follow_redirects(mut self, follow: bool) -> Self {
         self.follow_redirects = follow;
         self
     }
 
     /// Set verbose mode
+    #[inline]
     pub fn verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
     }
 
     /// Set output file path
+    #[inline]
     pub fn output_file(mut self, path: impl Into<String>) -> Self {
         self.output_file = Some(path.into());
         self
     }
 
     /// Set whether to include headers in output
+    #[inline]
     pub fn include_headers(mut self, include: bool) -> Self {
         self.include_headers = include;
         self
@@ -149,11 +159,13 @@ pub struct CurlResponse {
 
 impl CurlResponse {
     /// Check if the response status indicates success (2xx)
+    #[inline]
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }
 
     /// Get a specific header value
+    #[inline]
     pub fn get_header(&self, name: &str) -> Option<&String> {
         self.headers.get(&name.to_lowercase())
     }
@@ -161,7 +173,7 @@ impl CurlResponse {
 
 /// The main HTTP client
 pub struct MinimalCurl {
-    client: Client,
+    agent: Agent,
 }
 
 impl Default for MinimalCurl {
@@ -171,14 +183,31 @@ impl Default for MinimalCurl {
 }
 
 impl MinimalCurl {
-    /// Create a new MinimalCurl client
+    /// Create a new MinimalCurl client with default settings
     pub fn new() -> Self {
-        let client = Client::builder()
-            .user_agent("minimal-curl/0.1.0")
-            .build()
-            .expect("Failed to create HTTP client");
+        Self::with_config(true, Duration::from_secs(30))
+    }
 
-        Self { client }
+    /// Create a new MinimalCurl client with custom configuration
+    pub fn with_config(follow_redirects: bool, timeout: Duration) -> Self {
+        // Create native-tls connector
+        let tls = native_tls::TlsConnector::new()
+            .expect("Failed to create TLS connector");
+
+        let mut builder = AgentBuilder::new()
+            .tls_connector(Arc::new(tls))
+            .timeout(timeout)
+            .user_agent("bcurl/0.2.0");
+
+        if follow_redirects {
+            builder = builder.redirects(10);
+        } else {
+            builder = builder.redirects(0);
+        }
+
+        Self {
+            agent: builder.build(),
+        }
     }
 
     /// Execute an HTTP request with the given configuration
@@ -187,37 +216,7 @@ impl MinimalCurl {
             return Err(CurlError::InvalidUrl("URL cannot be empty".to_string()));
         }
 
-        // Build headers
-        let mut header_map = HeaderMap::new();
-        for (key, value) in &config.headers {
-            let header_name = HeaderName::try_from(key.as_str())
-                .map_err(|_| CurlError::InvalidHeader(format!("Invalid header name: {}", key)))?;
-            let header_value = HeaderValue::from_str(value)
-                .map_err(|_| CurlError::InvalidHeader(format!("Invalid header value: {}", value)))?;
-            header_map.insert(header_name, header_value);
-        }
-
-        // Build the request
-        let mut request_builder = match config.method {
-            HttpMethod::Get => self.client.get(&config.url),
-            HttpMethod::Post => self.client.post(&config.url),
-            HttpMethod::Put => self.client.put(&config.url),
-            HttpMethod::Delete => self.client.delete(&config.url),
-            HttpMethod::Head => self.client.head(&config.url),
-            HttpMethod::Patch => self.client.patch(&config.url),
-        };
-
-        request_builder = request_builder.headers(header_map);
-
-        if let Some(timeout) = config.timeout {
-            request_builder = request_builder.timeout(timeout);
-        }
-
-        if let Some(ref data) = config.data {
-            request_builder = request_builder.body(data.clone());
-        }
-
-        // Print verbose information
+        // Print verbose request information
         if config.verbose {
             eprintln!("> {} {}", config.method, config.url);
             for (key, value) in &config.headers {
@@ -226,22 +225,51 @@ impl MinimalCurl {
             eprintln!(">");
         }
 
-        // Execute the request
-        let response: Response = request_builder.send()?;
+        // Build the request based on method
+        let mut request = match config.method {
+            HttpMethod::Get => self.agent.get(&config.url),
+            HttpMethod::Post => self.agent.post(&config.url),
+            HttpMethod::Put => self.agent.put(&config.url),
+            HttpMethod::Delete => self.agent.delete(&config.url),
+            HttpMethod::Head => self.agent.head(&config.url),
+            HttpMethod::Patch => self.agent.request("PATCH", &config.url),
+        };
+
+        // Add headers
+        for (key, value) in &config.headers {
+            request = request.set(key, value);
+        }
+
+        // Set timeout if different from default
+        if let Some(timeout) = config.timeout {
+            request = request.timeout(timeout);
+        }
+
+        // Execute the request - handle both success and HTTP error status codes
+        let response = if let Some(ref data) = config.data {
+            match request.send_string(data) {
+                Ok(resp) => resp,
+                Err(ureq::Error::Status(_code, resp)) => resp, // HTTP errors are still valid responses
+                Err(e) => return Err(CurlError::RequestError(e)),
+            }
+        } else {
+            match request.call() {
+                Ok(resp) => resp,
+                Err(ureq::Error::Status(_code, resp)) => resp, // HTTP errors are still valid responses
+                Err(e) => return Err(CurlError::RequestError(e)),
+            }
+        };
 
         // Extract response information
-        let status = response.status().as_u16();
-        let status_text = response
-            .status()
-            .canonical_reason()
-            .unwrap_or("Unknown")
-            .to_string();
+        let status = response.status();
+        let status_text = response.status_text().to_string();
 
-        // Extract headers
-        let mut headers = HashMap::new();
-        for (key, value) in response.headers() {
-            if let Ok(v) = value.to_str() {
-                headers.insert(key.as_str().to_lowercase(), v.to_string());
+        // Extract headers - pre-allocate with estimated capacity
+        let header_names: Vec<_> = response.headers_names();
+        let mut headers = HashMap::with_capacity(header_names.len());
+        for name in header_names {
+            if let Some(value) = response.header(&name) {
+                headers.insert(name.to_lowercase(), value.to_string());
             }
         }
 
@@ -254,8 +282,20 @@ impl MinimalCurl {
             eprintln!("<");
         }
 
-        // Get body
-        let body = response.text()?;
+        // Read body efficiently
+        let body = if config.method == HttpMethod::Head {
+            String::new()
+        } else {
+            // Pre-allocate buffer based on content-length if available
+            let content_length = headers
+                .get("content-length")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(4096);
+
+            let mut body = String::with_capacity(content_length);
+            response.into_reader().read_to_string(&mut body)?;
+            body
+        };
 
         // Write to file if specified
         if let Some(ref path) = config.output_file {
@@ -279,12 +319,14 @@ impl MinimalCurl {
     }
 
     /// Convenience method for GET requests
+    #[inline]
     pub fn get(&self, url: &str) -> Result<CurlResponse, CurlError> {
         let config = RequestConfig::new(url);
         self.execute(&config)
     }
 
     /// Convenience method for POST requests
+    #[inline]
     pub fn post(&self, url: &str, data: Option<&str>) -> Result<CurlResponse, CurlError> {
         let mut config = RequestConfig::new(url).method(HttpMethod::Post);
         if let Some(d) = data {
@@ -294,6 +336,7 @@ impl MinimalCurl {
     }
 
     /// Convenience method for PUT requests
+    #[inline]
     pub fn put(&self, url: &str, data: Option<&str>) -> Result<CurlResponse, CurlError> {
         let mut config = RequestConfig::new(url).method(HttpMethod::Put);
         if let Some(d) = data {
@@ -303,6 +346,7 @@ impl MinimalCurl {
     }
 
     /// Convenience method for DELETE requests
+    #[inline]
     pub fn delete(&self, url: &str) -> Result<CurlResponse, CurlError> {
         let config = RequestConfig::new(url).method(HttpMethod::Delete);
         self.execute(&config)
@@ -310,6 +354,7 @@ impl MinimalCurl {
 }
 
 /// Parse a header string in the format "Key: Value"
+#[inline]
 pub fn parse_header(header: &str) -> Result<(String, String), CurlError> {
     let parts: Vec<&str> = header.splitn(2, ':').collect();
     if parts.len() != 2 {
@@ -347,10 +392,9 @@ mod tests {
 
         assert_eq!(config.url, "https://example.com");
         assert_eq!(config.method, HttpMethod::Post);
-        assert_eq!(
-            config.headers.get("Content-Type"),
-            Some(&"application/json".to_string())
-        );
+        assert_eq!(config.headers.len(), 1);
+        assert_eq!(config.headers[0].0, "Content-Type");
+        assert_eq!(config.headers[0].1, "application/json");
         assert_eq!(config.data, Some(r#"{"key": "value"}"#.to_string()));
         assert!(config.verbose);
         assert!(!config.follow_redirects);
