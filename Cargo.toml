@@ -6,10 +6,19 @@ description = "A minimal curl implementation in Rust"
 license = "MIT"
 
 [dependencies]
-reqwest = { version = "0.12", features = ["blocking", "json"] }
-clap = { version = "4.5", features = ["derive"] }
+# Use rustls instead of native-tls for faster TLS initialization
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Minimal clap features
+clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 thiserror = "2.0"
 
 [dev-dependencies]
 mockito = "1.6"
 tempfile = "3.15"
+
+[profile.release]
+lto = true           # Link-Time Optimization - better inlining across crates
+codegen-units = 1    # Single codegen unit for maximum optimization
+panic = "abort"      # No unwinding - smaller binary and faster
+strip = true         # Strip symbols from binary
+opt-level = 3        # Maximum optimization
