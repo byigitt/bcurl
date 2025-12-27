@@ -1,0 +1,15 @@
+[package]
+name = "minimal-curl"
+version = "0.1.0"
+edition = "2021"
+description = "A minimal curl implementation in Rust"
+license = "MIT"
+
+[dependencies]
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+clap = { version = "4.5", features = ["derive"] }
+thiserror = "2.0"
+
+[dev-dependencies]
+mockito = "1.6"
+tempfile = "3.15"
