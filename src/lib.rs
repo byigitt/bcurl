@@ -2,6 +2,12 @@
 //!
 //! This library provides basic HTTP functionality similar to curl.
 //! Uses ureq for minimal binary size and fast startup.
+//!
+//! ## Features
+//! - Connection pooling for multiple requests to same host
+//! - Automatic compression (gzip/deflate) support
+//! - Parallel request execution
+//! - Smaller binary than curl
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -10,6 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use ureq::{Agent, AgentBuilder};
+
+#[cfg(feature = "compression")]
+use flate2::read::{DeflateDecoder, GzDecoder};
 
 /// Custom error types for minimal-curl
 #[derive(Error, Debug)]
@@ -63,6 +72,8 @@ pub struct RequestConfig {
     pub verbose: bool,
     pub output_file: Option<String>,
     pub include_headers: bool,
+    /// Enable automatic compression (Accept-Encoding: gzip, deflate)
+    pub compression: bool,
 }
 
 impl Default for RequestConfig {
@@ -77,6 +88,7 @@ impl Default for RequestConfig {
             verbose: false,
             output_file: None,
             include_headers: false,
+            compression: true, // Enable compression by default for faster transfers
         }
     }
 }
@@ -144,6 +156,13 @@ impl RequestConfig {
     #[inline]
     pub fn include_headers(mut self, include: bool) -> Self {
         self.include_headers = include;
+        self
+    }
+
+    /// Set whether to request compressed responses
+    #[inline]
+    pub fn compression(mut self, enabled: bool) -> Self {
+        self.compression = enabled;
         self
     }
 }
@@ -240,6 +259,12 @@ impl MinimalCurl {
             request = request.set(key, value);
         }
 
+        // Add compression header if enabled (for faster transfers)
+        #[cfg(feature = "compression")]
+        if config.compression {
+            request = request.set("Accept-Encoding", "gzip, deflate");
+        }
+
         // Set timeout if different from default
         if let Some(timeout) = config.timeout {
             request = request.timeout(timeout);
@@ -282,7 +307,7 @@ impl MinimalCurl {
             eprintln!("<");
         }
 
-        // Read body efficiently
+        // Read body efficiently, handling compression
         let body = if config.method == HttpMethod::Head {
             String::new()
         } else {
@@ -292,8 +317,39 @@ impl MinimalCurl {
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(4096);
 
-            let mut body = String::with_capacity(content_length);
-            response.into_reader().read_to_string(&mut body)?;
+            let reader = response.into_reader();
+
+            // Handle compressed responses
+            #[cfg(feature = "compression")]
+            let body = match headers.get("content-encoding").map(|s| s.as_str()) {
+                Some("gzip") => {
+                    let mut decoder = GzDecoder::new(reader);
+                    let mut body = String::with_capacity(content_length * 4); // Compressed data expands
+                    decoder.read_to_string(&mut body)?;
+                    body
+                }
+                Some("deflate") => {
+                    let mut decoder = DeflateDecoder::new(reader);
+                    let mut body = String::with_capacity(content_length * 4);
+                    decoder.read_to_string(&mut body)?;
+                    body
+                }
+                _ => {
+                    let mut body = String::with_capacity(content_length);
+                    let mut reader = reader;
+                    reader.read_to_string(&mut body)?;
+                    body
+                }
+            };
+
+            #[cfg(not(feature = "compression"))]
+            let body = {
+                let mut body = String::with_capacity(content_length);
+                let mut reader = reader;
+                reader.read_to_string(&mut body)?;
+                body
+            };
+
             body
         };
 
@@ -379,6 +435,7 @@ mod tests {
         assert!(config.data.is_none());
         assert!(config.follow_redirects);
         assert!(!config.verbose);
+        assert!(config.compression); // Compression enabled by default for faster transfers
     }
 
     #[test]
